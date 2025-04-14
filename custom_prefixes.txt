@@ -1,0 +1,5 @@
+docs-
+media-
+music-
+pics-
+vids-
