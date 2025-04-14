@@ -319,6 +319,30 @@ def detect_mounted_volumes(target_os, verbose=True):
     return volumes
 
 # --- Command Functions ---
+
+def show_volume_record(volume_name, verbose=True):
+    """Shows the latest stored scan data record for a specific volume name."""
+    if not volume_name:
+        print_error("No volume name specified.")
+        return
+
+    print(f"--- Showing Stored Scan Data for Volume: '{volume_name}' ---")
+    junk_drives_data = load_json_data(JUNKDRIVES_FILE)
+
+    if not junk_drives_data:
+        print(f"No scan data found in {JUNKDRIVES_FILE}.")
+        return
+
+    if volume_name in junk_drives_data:
+        scan_data = junk_drives_data[volume_name]
+        print(f"Found record for '{volume_name}':")
+        # Pretty print using json.dumps for consistency
+        print(json.dumps(scan_data, indent=4, sort_keys=True))
+    else:
+        print(f"Error: Volume '{volume_name}' not found in tracked data ({JUNKDRIVES_FILE}).")
+
+    print("--- End Record ---")
+
 def report_prefix_counts(verbose=True):
     """Reports the latest custom prefix counts for all tracked volumes and provides an overall summary."""
     print("--- Custom Prefix Counts Report ---")
@@ -931,14 +955,14 @@ def main():
   python junkstick.py detect --scan-untracked # Detect and scan untracked drives
   python junkstick.py scan --volume /Volumes/MyUSB
   python junkstick.py show-scan          # Show latest data for connected tracked drives
+  python junkstick.py show-volume --volume MyUSB # Show stored data for specific volume
   python junkstick.py report-prefixes    # Show prefix counts for all tracked drives
   python junkstick.py check-duplicates   # Check for identical content hashes
   python junkstick.py list-drives
   python junkstick.py list-folders       # List all unique top-level folders found
   python junkstick.py list-tags          # List all unique tags used
-  python junkstick.py tag --volume Vol1,Vol2 --tags project-x,client-y # Add tags
-  python junkstick.py tag --volume Vol1 --tags backup --remove      # Remove a tag
-  python junkstick.py show-volumes-by-tag --tag project-x            # Find volumes with a tag
+  python junkstick.py tag --volume Vol1 --tags backup --remove # Add/remove tags
+  python junkstick.py show-volumes-by-tag --tag project-x # Find volumes with a tag
 """
     )
 
@@ -986,7 +1010,6 @@ def main():
         action='store_true',
         help="Scan any detected volumes that are not currently tracked."
     )
-
 
     # --- List drives command ---
     parser_list_drives = subparsers.add_parser('list-drives', help='List all tracked drives.')
@@ -1055,6 +1078,14 @@ def main():
     # --- List Folders command ---
     parser_list_folders = subparsers.add_parser('list-folders', help='List all unique top-level folders found across tracked drives.')
 
+    # --- Show Volume command ---
+    parser_show_volume = subparsers.add_parser('show-volume', help='Show the latest stored scan data for a specific tracked volume by name.')
+    parser_show_volume.add_argument(
+        '--volume',
+        required=True,
+        # Use default dest='volume'
+        help='Name of the tracked volume to display data for.'
+    )
 
 
     args = parser.parse_args()
@@ -1068,20 +1099,22 @@ def main():
         handle_default_action(args.os, is_verbose, args.dry_run, args.scan_untracked)
     elif args.command == 'show-scan':
         show_scan_data(args.os, is_verbose)
+    elif args.command == 'show-volume': # Add dispatch for new command
+        show_volume_record(args.volume, is_verbose)
     elif args.command == 'check-duplicates':
         check_duplicates(is_verbose)
     elif args.command == 'report-prefixes':
         report_prefix_counts(is_verbose)
-    elif args.command == 'tag': 
+    elif args.command == 'tag':
         manage_tags(args.volume_names_str, args.tags_str, args.remove_tags, is_verbose)
-    elif args.command == 'list-tags': 
+    elif args.command == 'list-tags':
         list_all_tags(is_verbose)
     elif args.command == 'show-volumes-by-tag':
         show_volumes_by_tag(args.target_tag, is_verbose)
-    elif args.command == 'list-drives':
-        list_drives(is_verbose)
     elif args.command == 'list-folders':
         list_folders(is_verbose)
+    elif args.command == 'list-drives':
+        list_drives(is_verbose)
     elif args.command == 'list-scans':
         filter_volume = args.volume if hasattr(args, 'volume') else None
         list_scans(filter_volume, is_verbose)
