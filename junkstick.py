@@ -831,7 +831,7 @@ def show_volumes_by_tag(target_tag, verbose=True):
             print(f"- {volume_name}")
     print("--- End Volume List ---")
 
-def list_folders(verbose=True):
+def list_folders(highlight_prefixes=False, verbose=True):
     """Lists all unique top-level folder names found across tracked drives."""
     print("--- Tracked Top-Level Folders ---")
     junk_drives_data = load_json_data(JUNKDRIVES_FILE)
@@ -845,15 +845,25 @@ def list_folders(verbose=True):
 
     for volume_name, scan_data in junk_drives_data.items():
         folder_list = scan_data.get("top_level_dirs") # Get the list of directories
-
         if folder_list and isinstance(folder_list, list):
             for folder_name in folder_list:
                 if folder_name not in folder_to_volumes:
-                    # Use a set for volumes to automatically handle duplicates
                     folder_to_volumes[folder_name] = set()
                 folder_to_volumes[folder_name].add(volume_name)
-        elif folder_list: # Exists but isn't a list
+        elif folder_list:
              print_verbose(f"Warning: Invalid 'top_level_dirs' data found for volume '{volume_name}'. Skipping.", verbose)
+
+    # --- Load custom prefixes IF highlighting is enabled ---
+    custom_prefixes = []
+    if highlight_prefixes:
+        custom_prefixes = load_custom_prefixes()
+        # Sort by length descending to match longest prefix first
+        custom_prefixes.sort(key=len, reverse=True)
+        if custom_prefixes:
+             print_verbose(f"Prefix highlighting enabled. Using {len(custom_prefixes)} prefixes.", verbose)
+        else:
+             print_verbose("Prefix highlighting enabled, but no custom prefixes found/loaded.", verbose)
+
 
     if not folder_to_volumes:
         print("No top-level folders found in any scan data.")
@@ -862,14 +872,120 @@ def list_folders(verbose=True):
         for folder_name in sorted(folder_to_volumes.keys()):
             # Get the set of volumes, convert to sorted list for display
             volume_list = sorted(list(folder_to_volumes[folder_name]))
+            volume_list_str = f"({', '.join(volume_list)})" # Volumes always gray
 
-            # --- Apply color to the volume list part ---
-            volume_list_str = f"({', '.join(volume_list)})"
-            print(f"{folder_name} {COLOR_GRAY}{volume_list_str}{COLOR_RESET}")
-            # --- End color application ---
+            folder_output_str = f"[{folder_name}]" # Default output
+
+            # --- Apply prefix highlighting if enabled and match found ---
+            if highlight_prefixes and custom_prefixes:
+                matched_prefix = None
+                for prefix in custom_prefixes:
+                    if folder_name.startswith(prefix):
+                        matched_prefix = prefix
+                        break # Found longest match first due to sorting
+
+                if matched_prefix:
+                    prefix_len = len(matched_prefix)
+                    rest_of_name = folder_name[prefix_len:]
+                    # Apply green color to the prefix part
+                    folder_output_str = f"[{COLOR_GREEN}{matched_prefix}{COLOR_RESET}{rest_of_name}]"
+
+            # Print the final line with potentially highlighted folder and gray volumes
+            print(f"{folder_output_str} {COLOR_GRAY}{volume_list_str}{COLOR_RESET}")
+            # --- End modified print section ---
 
     print("\n--- End Folder List ---")
 
+def show_live_listings(target_os, highlight_prefixes=False, verbose=True):
+    """Shows the live top-level directory listing for currently connected drives."""
+    print("--- Live Listings for Connected Drives ---")
+    detected_volumes = detect_mounted_volumes(target_os, verbose) # dict {name: path}
+
+    if not detected_volumes:
+        print("No external volumes detected or accessible.")
+        return
+
+    # --- Load custom prefixes IF highlighting is enabled ---
+    custom_prefixes = []
+    if highlight_prefixes:
+        custom_prefixes = load_custom_prefixes()
+        custom_prefixes.sort(key=len, reverse=True)
+        if custom_prefixes:
+             print_verbose(f"Prefix highlighting enabled. Using {len(custom_prefixes)} prefixes.", verbose)
+        else:
+             print_verbose("Prefix highlighting enabled, but no custom prefixes found/loaded.", verbose)
+
+    # --- Track number of volumes successfully listed ---
+    volumes_listed_count = 0
+    total_detected_volumes = len(detected_volumes) # Get total detected count
+
+    # --- Iterate through detected volumes ---
+    for volume_name, path in sorted(detected_volumes.items()):
+        print(f"\nVolume: {volume_name} ({path})")
+        listing_details = get_dir_listing_details(path, target_os, verbose)
+
+        if listing_details is None:
+            print(f"  Could not retrieve listing for this volume.")
+            print("---") # Separator
+            continue # Skip to next volume
+
+        # Increment count of successfully listed volumes
+        volumes_listed_count += 1
+
+        if not listing_details:
+            print("  (Directory is empty or contains only hidden items)")
+            # Fall through to print duplicate status (which will be none)
+
+        # --- Process and print listing items ---
+        item_names_seen_lower = set()
+        duplicates_found = []
+        for item in listing_details:
+            item_name = item.get('name', 'UnknownName')
+            item_type = item.get('type', '???').capitalize()[:3] # "Dir" or "Fil"
+            item_size = item.get('size', -1)
+            item_modified_ts = item.get('modified', 0)
+
+            try:
+                mod_time_dt = datetime.datetime.fromtimestamp(item_modified_ts)
+                mod_time_str = mod_time_dt.strftime('%Y-%m-%d %H:%M')
+            except ValueError:
+                mod_time_str = "Invalid Date"
+
+            item_name_lower = item_name.lower()
+            if item_name_lower in item_names_seen_lower:
+                duplicates_found.append(item_name)
+            item_names_seen_lower.add(item_name_lower)
+
+            display_name = item_name
+            if highlight_prefixes and custom_prefixes:
+                matched_prefix = None
+                for prefix in custom_prefixes:
+                    if item_name.startswith(prefix):
+                        matched_prefix = prefix
+                        break
+                if matched_prefix:
+                    prefix_len = len(matched_prefix)
+                    rest_of_name = item_name[prefix_len:]
+                    display_name = f"{COLOR_GREEN}{matched_prefix}{COLOR_RESET}{rest_of_name}"
+
+            print(f"  [{item_type}] {display_name} ({item_size} B, Mod: {mod_time_str})")
+
+        # --- Print Duplicate Status for this volume (Modified Logic) ---
+        if duplicates_found:
+            unique_duplicates = sorted(list(set(duplicates_found)))
+            print(f"  Warning: Duplicate names detected (case ignored): {unique_duplicates}")
+        # --- Only print "No duplicate..." if more than one volume was detected in total ---
+        elif total_detected_volumes > 1:
+            print(f"  No duplicate names detected in this listing.")
+        # --- Otherwise (only 1 volume detected total), print nothing extra ---
+
+        print("---") # Separator between volumes
+
+    # Check if we actually listed any volumes (maybe all failed?)
+    if volumes_listed_count == 0 and total_detected_volumes > 0:
+         print(f"\nCould not retrieve listings for any of the {total_detected_volumes} detected volumes.")
+
+    print("\n--- End Listings ---")
 
 def handle_default_action(target_os, verbose=True, dry_run=False, scan_untracked=False):
     """Detects volumes, lists status/dry-run data, and optionally scans untracked."""
@@ -960,6 +1076,10 @@ def main():
   python junkstick.py check-duplicates   # Check for identical content hashes
   python junkstick.py list-drives
   python junkstick.py list-folders       # List all unique top-level folders found
+  python junkstick.py list-folders --highlight-prefixes # Highlight custom prefixes
+  python junkstick.py listings           # Show live listings for connected drives
+  python junkstick.py listings --highlight-prefixes # Highlight prefixes in live listing
+  python junkstick.py ls                 # Alias for listings --highlight-prefixes
   python junkstick.py list-tags          # List all unique tags used
   python junkstick.py tag --volume Vol1 --tags backup --remove # Add/remove tags
   python junkstick.py show-volumes-by-tag --tag project-x # Find volumes with a tag
@@ -1077,6 +1197,22 @@ def main():
 
     # --- List Folders command ---
     parser_list_folders = subparsers.add_parser('list-folders', help='List all unique top-level folders found across tracked drives.')
+    parser_list_folders.add_argument(
+        '--highlight-prefixes',
+        action='store_true',
+        help='Highlight known custom prefixes within folder names (requires custom_prefixes.txt).'
+    )
+
+    # --- Listings command ---
+    parser_listings = subparsers.add_parser('listings', help='Show live top-level listings for connected drives.')
+    parser_listings.add_argument(
+        '--highlight-prefixes',
+        action='store_true',
+        help='Highlight known custom prefixes within item names (requires custom_prefixes.txt).'
+    )
+
+    # --- ls command (Alias for Listings cmd) ---
+    parser_ls = subparsers.add_parser('ls', help='Alias for "listings --highlight-prefixes".')
 
     # --- Show Volume command ---
     parser_show_volume = subparsers.add_parser('show-volume', help='Show the latest stored scan data for a specific tracked volume by name.')
@@ -1087,20 +1223,22 @@ def main():
         help='Name of the tracked volume to display data for.'
     )
 
-
     args = parser.parse_args()
 
     # --- Command Dispatch ---
     is_verbose = args.verbose
-
     if args.command == 'scan':
         perform_scan(args.volume, args.os, is_verbose, args.dry_run)
     elif args.command == 'detect':
         handle_default_action(args.os, is_verbose, args.dry_run, args.scan_untracked)
     elif args.command == 'show-scan':
         show_scan_data(args.os, is_verbose)
-    elif args.command == 'show-volume': # Add dispatch for new command
+    elif args.command == 'show-volume':
         show_volume_record(args.volume, is_verbose)
+    elif args.command == 'listings':
+        show_live_listings(args.os, args.highlight_prefixes, is_verbose)
+    elif args.command == 'ls':
+        show_live_listings(args.os, highlight_prefixes=True, verbose=is_verbose)
     elif args.command == 'check-duplicates':
         check_duplicates(is_verbose)
     elif args.command == 'report-prefixes':
@@ -1112,7 +1250,7 @@ def main():
     elif args.command == 'show-volumes-by-tag':
         show_volumes_by_tag(args.target_tag, is_verbose)
     elif args.command == 'list-folders':
-        list_folders(is_verbose)
+        list_folders(args.highlight_prefixes, is_verbose)
     elif args.command == 'list-drives':
         list_drives(is_verbose)
     elif args.command == 'list-scans':
